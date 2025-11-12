@@ -1,13 +1,23 @@
-import { useState, useEffect, useCallback } from 'react';
-import { Play, Pause, RotateCcw } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Play, Pause, RotateCcw, BarChart2, Clock, Cpu, GitCompare } from 'lucide-react';
+
+// Helper function to format time
+const formatTime = (ms: number): string => {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(2)}s`;
+};
 
 // Algorithm implementations
 const sortingAlgorithms = {
   bubbleSort: async (arr: number[], updateArray: (arr: number[]) => Promise<void>) => {
     const n = arr.length;
+    let comparisons = 0;
+    let swaps = 0;
     for (let i = 0; i < n - 1; i++) {
       for (let j = 0; j < n - i - 1; j++) {
+        comparisons++;
         if (arr[j] > arr[j + 1]) {
+          swaps++;
           [arr[j], arr[j + 1]] = [arr[j + 1], arr[j]];
           await updateArray([...arr]);
         }
@@ -113,12 +123,62 @@ const sortingAlgorithms = {
 
 type AlgorithmKey = keyof typeof sortingAlgorithms;
 
+interface Metrics {
+  comparisons: number;
+  swaps: number;
+  startTime: number | null;
+  endTime: number | null;
+  isSorting: boolean;
+}
+
+const timeComplexity = {
+  bubbleSort: { best: 'O(n)', average: 'O(n²)', worst: 'O(n²)' },
+  quickSort: { best: 'O(n log n)', average: 'O(n log n)', worst: 'O(n²)' },
+  mergeSort: { best: 'O(n log n)', average: 'O(n log n)', worst: 'O(n log n)' },
+  selectionSort: { best: 'O(n²)', average: 'O(n²)', worst: 'O(n²)' },
+} as const;
+
+const spaceComplexity = {
+  bubbleSort: 'O(1)',
+  quickSort: 'O(log n)',
+  mergeSort: 'O(n)',
+  selectionSort: 'O(1)',
+} as const;
+
 const SortingVisualizer = () => {
   const [array, setArray] = useState<number[]>([]);
   const [isSorting, setIsSorting] = useState(false);
   const [algorithm, setAlgorithm] = useState<AlgorithmKey>('bubbleSort');
   const [arraySize, setArraySize] = useState(30);
   const [speed, setSpeed] = useState(50);
+  const [metrics, setMetrics] = useState<Metrics>({
+    comparisons: 0,
+    swaps: 0,
+    startTime: null,
+    endTime: null,
+    isSorting: false,
+  });
+  
+  const animationFrameId = useRef<number>();
+  
+  // Reset metrics
+  const resetMetrics = useCallback(() => {
+    setMetrics({
+      comparisons: 0,
+      swaps: 0,
+      startTime: null,
+      endTime: null,
+      isSorting: false,
+    });
+  }, []);
+  
+  // Update metrics
+  const updateMetrics = useCallback((updates: Partial<Metrics>) => {
+    setMetrics(prev => ({
+      ...prev,
+      ...updates,
+    }));
+  }, []);
 
   // Initialize array
   const resetArray = useCallback(() => {
@@ -127,7 +187,16 @@ const SortingVisualizer = () => {
       newArray.push(randomIntFromInterval(5, 100));
     }
     setArray(newArray);
-  }, [arraySize]);
+    resetMetrics();
+  }, [arraySize, resetMetrics]);
+  
+  // Extract sorting algorithms from the object
+  const {
+    bubbleSort,
+    quickSort,
+    mergeSort,
+    selectionSort
+  } = sortingAlgorithms;
 
   // Generate random number between min and max (inclusive)
   const randomIntFromInterval = (min: number, max: number) => {
@@ -140,26 +209,94 @@ const SortingVisualizer = () => {
     
     setIsSorting(true);
     const arrayCopy = [...array];
+    const startTime = performance.now();
+    
+    updateMetrics({
+      comparisons: 0,
+      swaps: 0,
+      startTime,
+      endTime: null,
+      isSorting: true,
+    });
     
     try {
-      await sortingAlgorithms[algorithm](
-        arrayCopy,
-        async (newArray) => {
+      // Wrap the sorting algorithm to track metrics
+      const trackedAlgorithm = async () => {
+        let comparisons = 0;
+        let swaps = 0;
+        
+        const trackedUpdateArray = async (newArray: number[]) => {
           setArray([...newArray]);
+          
+          // Update metrics in the next animation frame for better performance
+          animationFrameId.current = requestAnimationFrame(() => {
+            updateMetrics({
+              comparisons,
+              swaps,
+            });
+          });
+          
           await new Promise(resolve => setTimeout(resolve, 100 - speed));
+        };
+        
+        // Create a proxy to track array accesses and modifications
+        const handler = {
+          get: function(target: any, prop: string | symbol) {
+            if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+              comparisons++;
+            }
+            return target[prop];
+          },
+          set: function(target: any, prop: string | symbol, value: any) {
+            if (typeof prop === 'string' && /^\d+$/.test(prop)) {
+              swaps++;
+            }
+            target[prop] = value;
+            return true;
+          }
+        };
+        
+        const trackedArray = new Proxy(arrayCopy, handler);
+        
+        // Run the actual sorting algorithm with tracking
+        if (algorithm === 'bubbleSort') {
+          await bubbleSort(trackedArray, trackedUpdateArray);
+        } else if (algorithm === 'quickSort') {
+          await quickSort(trackedArray, trackedUpdateArray);
+        } else if (algorithm === 'mergeSort') {
+          await mergeSort(trackedArray, trackedUpdateArray);
+        } else if (algorithm === 'selectionSort') {
+          await selectionSort(trackedArray, trackedUpdateArray);
         }
-      );
+      };
+      
+      await trackedAlgorithm();
+      
     } catch (error) {
       console.error('Sorting error:', error);
     } finally {
+      const endTime = performance.now();
+      updateMetrics({
+        endTime,
+        isSorting: false,
+      });
       setIsSorting(false);
     }
   };
 
-  // Initialize array on mount and when arraySize changes
+  // Initialize array on mount and when arraySize or algorithm changes
   useEffect(() => {
     resetArray();
-  }, [resetArray]);
+  }, [arraySize, algorithm, resetArray]);
+
+  // Clean up animation frame on unmount
+  useEffect(() => {
+    return () => {
+      if (animationFrameId.current) {
+        cancelAnimationFrame(animationFrameId.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
@@ -259,37 +396,95 @@ const SortingVisualizer = () => {
           ))}
         </div>
         
-        {/* Algorithm Info */}
+        {/* Performance Metrics */}
         <div className="mt-6 p-4 bg-gray-50 rounded-md">
-          <h3 className="font-medium text-lg mb-2">
-            {algorithm === 'bubbleSort' && 'Bubble Sort'}
-            {algorithm === 'quickSort' && 'Quick Sort'}
-            {algorithm === 'mergeSort' && 'Merge Sort'}
-            {algorithm === 'selectionSort' && 'Selection Sort'}
+          <h3 className="font-medium text-lg mb-4 flex items-center gap-2">
+            <BarChart2 className="w-5 h-5" />
+            Performance Metrics
           </h3>
-          <p className="text-gray-700 text-sm">
-            {algorithm === 'bubbleSort' && 
-              'Repeatedly steps through the list, compares adjacent elements and swaps them if they are in the wrong order.'}
-            {algorithm === 'quickSort' && 
-              'A divide-and-conquer algorithm that selects a pivot element and partitions the array around the pivot.'}
-            {algorithm === 'mergeSort' && 
-              'A divide-and-conquer algorithm that divides the input array into two halves, sorts them, and then merges them.'}
-            {algorithm === 'selectionSort' && 
-              'Repeatedly finds the minimum element from the unsorted part and puts it at the beginning.'}
-          </p>
-          <div className="mt-2">
-            <span className="inline-block bg-gray-200 rounded-full px-3 py-1 text-xs font-semibold text-gray-700 mr-2">
-              {algorithm === 'bubbleSort' && 'Time: O(n²)'}
-              {algorithm === 'quickSort' && 'Time: O(n log n) average, O(n²) worst'}
-              {algorithm === 'mergeSort' && 'Time: O(n log n)'}
-              {algorithm === 'selectionSort' && 'Time: O(n²)'}
-            </span>
-            <span className="inline-block bg-gray-200 rounded-full px-3 py-1 text-xs font-semibold text-gray-700">
-              {algorithm === 'bubbleSort' && 'Space: O(1)'}
-              {algorithm === 'quickSort' && 'Space: O(log n)'}
-              {algorithm === 'mergeSort' && 'Space: O(n)'}
-              {algorithm === 'selectionSort' && 'Space: O(1)'}
-            </span>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            {/* Real-time Metrics */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm">
+                <GitCompare className="w-4 h-4 text-blue-500" />
+                <span className="font-medium">Comparisons:</span>
+                <span className="ml-auto font-mono">{metrics.comparisons.toLocaleString()}</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <svg className="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"></path>
+                </svg>
+                <span className="font-medium">Swaps:</span>
+                <span className="ml-auto font-mono">{metrics.swaps.toLocaleString()}</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <Clock className="w-4 h-4 text-purple-500" />
+                <span className="font-medium">Time:</span>
+                <span className="ml-auto font-mono">
+                  {metrics.startTime && metrics.endTime 
+                    ? formatTime(metrics.endTime - metrics.startTime)
+                    : metrics.startTime 
+                      ? formatTime(performance.now() - metrics.startTime)
+                      : '0ms'}
+                </span>
+              </div>
+            </div>
+            
+            {/* Complexity Analysis */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-sm">
+                <Cpu className="w-4 h-4 text-orange-500" />
+                <span className="font-medium">Time Complexity:</span>
+                <div className="ml-auto flex gap-1">
+                  <span className="px-2 py-0.5 bg-green-100 text-green-800 text-xs rounded">
+                    Best: {timeComplexity[algorithm].best}
+                  </span>
+                  <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-xs rounded">
+                    Avg: {timeComplexity[algorithm].average}
+                  </span>
+                  <span className="px-2 py-0.5 bg-red-100 text-red-800 text-xs rounded">
+                    Worst: {timeComplexity[algorithm].worst}
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <svg className="w-4 h-4 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"></path>
+                </svg>
+                <span className="font-medium">Space Complexity:</span>
+                <span className="ml-auto px-2 py-0.5 bg-blue-100 text-blue-800 text-xs rounded">
+                  {spaceComplexity[algorithm]}
+                </span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <svg className="w-4 h-4 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                </svg>
+                <span className="font-medium">Current Speed:</span>
+                <span className="ml-auto font-mono">{(speed / 10).toFixed(1)}x</span>
+              </div>
+            </div>
+          </div>
+          
+          {/* Algorithm Info */}
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <h4 className="font-medium mb-2">
+              {algorithm === 'bubbleSort' && 'Bubble Sort'}
+              {algorithm === 'quickSort' && 'Quick Sort'}
+              {algorithm === 'mergeSort' && 'Merge Sort'}
+              {algorithm === 'selectionSort' && 'Selection Sort'}
+            </h4>
+            <p className="text-sm text-gray-600">
+              {algorithm === 'bubbleSort' && 
+                'Repeatedly steps through the list, compares adjacent elements and swaps them if they are in the wrong order.'}
+              {algorithm === 'quickSort' && 
+                'A divide-and-conquer algorithm that selects a pivot element and partitions the array around the pivot.'}
+              {algorithm === 'mergeSort' && 
+                'A divide-and-conquer algorithm that divides the input array into two halves, sorts them, and then merges them.'}
+              {algorithm === 'selectionSort' && 
+                'Repeatedly finds the minimum element from the unsorted part and puts it at the beginning.'}
+            </p>
           </div>
         </div>
       </div>
